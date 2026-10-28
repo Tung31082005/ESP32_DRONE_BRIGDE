@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DroneBridge FPV Video</title>
+    <style>
+        body { margin: 0; padding: 0; background-color: #111; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; height: 100vh; }
+        .top-bar { width: 100%; display: flex; justify-content: space-between; padding: 10px 20px; box-sizing: border-box; background-color: #222; }
+        .top-bar h2 { margin: 0; font-size: 18px; }
+        .rssi { font-weight: bold; color: #4caf50; }
+        .video-container { flex: 1; display: flex; justify-content: center; align-items: center; width: 100%; overflow: hidden; position: relative; }
+        img#stream { width: 100%; height: 100%; object-fit: contain; }
+        canvas#captureCanvas { display: none; }
+        .controls { width: 100%; padding: 15px; box-sizing: border-box; background-color: #222; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+        button, select { padding: 10px 15px; font-size: 16px; border: none; border-radius: 5px; background-color: #3166FF; color: white; cursor: pointer; }
+        button:hover, select:hover { background-color: #204dbf; }
+        button.recording { background-color: #f44336; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0.5; } }
+        .back-btn { background-color: #555; }
+        .pseudo-fullscreen { position: fixed !important; top: 0; left: 0; width: 100vw !important; height: 100vh !important; z-index: 9999; background-color: black; margin: 0; padding: 0; max-width: 100%; max-height: 100%; display: flex !important; justify-content: center; align-items: center; }
+        .stats-bar { width: 100%; display: flex; justify-content: center; gap: 20px; padding: 6px 10px; box-sizing: border-box; background-color: #1a1a1a; color: #8f8; font-family: monospace; font-size: 14px; }
+        #warning { display: none; position: absolute; top: 10px; left: 50%; transform: translateX(-50%); background-color: rgba(255, 0, 0, 0.8); color: white; padding: 10px 20px; border-radius: 5px; font-weight: bold; font-size: 20px; animation: blink 1s infinite; z-index: 100; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <div class="top-bar">
+        <h2>FPV Video</h2>
+        <div class="rssi" id="rssi-text">WiFi RSSI: <span id="rssi-val">--</span> dBm</div>
+    </div>
+    <div class="stats-bar">
+        <span>BW: <b id="bw-val">--</b> KB/s</span>
+        <span>FPS: <b id="fps-val">--</b></span>
+        <span>Frame: <b id="frame-val">--</b> KB</span>
+    </div>
+    
+    <div class="video-container">
+        <div id="warning">WEAK SIGNAL! RETURN NOW!</div>
+        <img id="stream" src="" crossorigin="anonymous">
+        <canvas id="captureCanvas"></canvas>
+    </div>
+
+    <div class="controls">
+        <button class="back-btn" onclick="window.location.href='/'">Back</button>
+        <button id="fsBtn" style="background-color: #9c27b0;">Fullscreen</button>
+        <button id="toggleCamBtn" style="background-color: #ff9800; border-color: #ff9800;">Pause Camera</button>
+        <button id="flashBtn">Flash LED: OFF</button>
+        <select id="resSelect">
+            <option value="6" selected>400x296 (CIF - Tăng 1 bậc)</option>
+        </select>
+        <button id="flipBtn" style="background-color: #607d8b;">Flip (↕)</button>
+        <button id="mirrorBtn" style="background-color: #607d8b;">Mirror (↔)</button>
+        <button id="photoBtn">Snapshot</button>
+        <button id="recordBtn">Record Video</button>
+    </div>
+
+    <script>
+        const camIP = window.location.protocol + '//' + window.location.hostname + ':81';
+        const ctrlIP = window.location.protocol + '//' + window.location.hostname + ':82';
+        const streamImg = document.getElementById('stream');
+        
+        // Power on camera hardware before loading stream
+        fetch(ctrlIP + '/cam_power?state=1').then(() => {
+            streamImg.src = camIP + '/stream?' + new Date().getTime();
+        });
+        
+        let isCamActive = true;
+        let flashState = false;
+
+        // Toggle Camera Power (hardware on/off)
+        document.getElementById('toggleCamBtn').addEventListener('click', (e) => {
+            isCamActive = !isCamActive;
+            if (isCamActive) {
+                fetch(ctrlIP + '/cam_power?state=1').then(() => {
+                    streamImg.src = camIP + '/stream?' + new Date().getTime();
+                });
+                e.target.innerText = 'Pause Camera';
+                e.target.style.backgroundColor = '#ff9800';
+            } else {
+                fetch(ctrlIP + '/cam_power?state=0');
+                streamImg.src = '';
+                e.target.innerText = 'Resume Camera';
+                e.target.style.backgroundColor = '#4caf50';
+            }
+        });
+
+        document.getElementById('fsBtn').addEventListener('click', () => { const el = document.querySelector('.video-container'); if (el.classList.contains('pseudo-fullscreen')) { el.classList.remove('pseudo-fullscreen'); document.body.style.overflow = 'auto'; } else { el.classList.add('pseudo-fullscreen'); document.body.style.overflow = 'hidden'; } });
+
+        // Auto-reconnect on stream error
+        streamImg.onerror = () => {
+            if (!isCamActive) return;
+            console.log("Stream lost. Reconnecting...");
+            setTimeout(() => {
+                if (isCamActive) streamImg.src = camIP + '/stream?' + new Date().getTime();
+            }, 1500);
+        };
+        
+        // Update RSSI every 2 seconds
+        setInterval(() => {
+            fetch(ctrlIP + '/rssi').then(r => r.json()).then(data => {
+                let rssi = data.rssi;
+                let rssiEl = document.getElementById('rssi-val');
+                let rssiTextEl = document.getElementById('rssi-text');
+                let warningEl = document.getElementById('warning');
+                
+                if (rssi !== 0) {
+                    rssiEl.innerText = rssi;
+                    if (rssi < -80) {
+                        rssiTextEl.style.color = '#f44336';
+                        warningEl.style.display = 'block';
+                    } else if (rssi < -70) {
+                        rssiTextEl.style.color = '#ffeb3b';
+                        warningEl.style.display = 'none';
+                    } else {
+                        rssiTextEl.style.color = '#4caf50';
+                        warningEl.style.display = 'none';
+                    }
+                } else {
+                    rssiEl.innerText = '--';
+                    warningEl.style.display = 'none';
+                }
+            }).catch(() => {});
+        }, 2000);
+
+        // Poll stream bandwidth stats every 2 seconds
+        const STATS_INTERVAL = 2;
+        setInterval(() => {
+            fetch(ctrlIP + '/stats').then(r => r.json()).then(data => {
+                document.getElementById('bw-val').innerText = (data.bytes / 1024 / STATS_INTERVAL).toFixed(1);
+                document.getElementById('fps-val').innerText = (data.frames / STATS_INTERVAL).toFixed(0);
+                document.getElementById('frame-val').innerText = (data.last_size / 1024).toFixed(1);
+            }).catch(() => {});
+        }, STATS_INTERVAL * 1000);
+
+        // Flash LED toggle
+        document.getElementById('flashBtn').addEventListener('click', (e) => {
+            flashState = !flashState;
+            fetch(`${ctrlIP}/light?val=${flashState ? 1 : 0}`);
+            e.target.innerText = `Flash LED: ${flashState ? 'ON' : 'OFF'}`;
+        });
+
+        // Resolution change
+        document.getElementById('resSelect').addEventListener('change', (e) => {
+            fetch(`${ctrlIP}/resolution?val=${e.target.value}`).then(() => {
+                setTimeout(() => {
+                    streamImg.src = camIP + '/stream?' + new Date().getTime();
+                }, 1000);
+            });
+        });
+
+        // Take snapshot and save to device
+        document.getElementById('photoBtn').addEventListener('click', () => {
+            const img = document.getElementById('stream');
+            const canvas = document.getElementById('captureCanvas');
+            canvas.width = img.naturalWidth || img.width;
+            canvas.height = img.naturalHeight || img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            
+            try {
+                const link = document.createElement('a');
+                link.download = `FPV_Snapshot_${Date.now()}.jpg`;
+                link.href = canvas.toDataURL('image/jpeg', 0.9);
+                link.click();
+            } catch (e) {
+                window.open(canvas.toDataURL('image/jpeg', 0.9));
+            }
+
+            // Reconnect stream if browser drops connection during download
+            setTimeout(() => {
+                if (isCamActive && (!img.complete || img.naturalWidth === 0)) {
+                    img.src = camIP + '/stream?' + new Date().getTime();
+                }
+            }, 1500);
+        });
+
+        // Record video to device
+        let mediaRecorder;
+        let recordedChunks = [];
+        let isRecording = false;
+        let animationId;
+
+        const img = document.getElementById('stream');
+        const canvas = document.getElementById('captureCanvas');
+        const ctx = canvas.getContext('2d');
+
+        function drawToCanvas() {
+            if (isRecording) {
+                if (img.naturalWidth) {
+                    if (canvas.width !== img.naturalWidth) {
+                        canvas.width = img.naturalWidth;
+                        canvas.height = img.naturalHeight;
+                    }
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                }
+                // Limit to ~15fps to reduce CPU load on phone
+                animationId = setTimeout(drawToCanvas, 66); 
+            }
+        }
+
+        document.getElementById('recordBtn').addEventListener('click', (e) => {
+            if (!isRecording) {
+                isRecording = true;
+                e.target.innerText = 'Stop Recording';
+                e.target.classList.add('recording');
+                
+                canvas.width = img.naturalWidth || 640;
+                canvas.height = img.naturalHeight || 480;
+                
+                const stream = canvas.captureStream(15);
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+                recordedChunks = [];
+                
+                mediaRecorder.ondataavailable = (ev) => {
+                    if (ev.data.size > 0) recordedChunks.push(ev.data);
+                };
+                
+                mediaRecorder.onstop = () => {
+                    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = `FPV_Video_${Date.now()}.webm`;
+                    link.click();
+                    URL.revokeObjectURL(url);
+                };
+                
+                drawToCanvas();
+                mediaRecorder.start();
+            } else {
+                isRecording = false;
+                clearTimeout(animationId);
+                mediaRecorder.stop();
+                e.target.innerText = 'Record Video';
+                e.target.classList.remove('recording');
+                
+                // Reconnect stream if browser drops connection during download
+                setTimeout(() => {
+                    if (isCamActive && (!img.complete || img.naturalWidth === 0)) {
+                        img.src = camIP + '/stream?' + new Date().getTime();
+                    }
+                }, 1500);
+            }
+        });
+
+        // UI Flip & Mirror logic
+        let isFlipped = localStorage.getItem('camFlipped') === 'true';
+        let isMirrored = localStorage.getItem('camMirrored') === 'true';
+        
+        function updateTransform() {
+            let scaleY = isFlipped ? -1 : 1;
+            let scaleX = isMirrored ? -1 : 1;
+            img.style.transform = `scale(${scaleX}, ${scaleY})`;
+            
+            document.getElementById('flipBtn').style.backgroundColor = isFlipped ? '#4caf50' : '#607d8b';
+            document.getElementById('mirrorBtn').style.backgroundColor = isMirrored ? '#4caf50' : '#607d8b';
+        }
+        
+        // Apply initial state
+        updateTransform();
+
+        document.getElementById('flipBtn').addEventListener('click', () => {
+            isFlipped = !isFlipped;
+            localStorage.setItem('camFlipped', isFlipped);
+            updateTransform();
+        });
+
+        document.getElementById('mirrorBtn').addEventListener('click', () => {
+            isMirrored = !isMirrored;
+            localStorage.setItem('camMirrored', isMirrored);
+            updateTransform();
+        });
+    </script>
+</body>
+</html>
+
